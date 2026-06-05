@@ -291,15 +291,21 @@ function renderInsightChip(label, value, tone) {
 
 function renderCaseForm() {
   return `
-    <div class="form-grid compact">
-      ${inputField('姓名/编号', 'name')}
-      ${inputField('年龄', 'age')}
-      ${inputField('性别', 'sex')}
+    <div class="case-entry-frame">
+      <div class="case-entry-header">
+        <span>一体化录入框</span>
+        <strong>把病历、体征、化验单、影像和量表统一放在同一个临床资料框内，便于系统整体分析。</strong>
+      </div>
+      <div class="form-grid compact">
+        ${inputField('姓名/编号', 'name')}
+        ${inputField('年龄', 'age')}
+        ${inputField('性别', 'sex')}
+      </div>
+      ${textareaField('主诉', 'chiefComplaint')}
+      ${textareaField('现病史 / 既往史 / 用药史 / 过敏史', 'history', 5)}
+      ${textareaField('查体与生命体征', 'exam', 5)}
+      ${textareaField('化验单 / 影像 / 心电图 / 量表结果', 'labs', 8)}
     </div>
-    ${textareaField('主诉', 'chiefComplaint')}
-    ${textareaField('现病史/既往史/用药史/过敏史', 'history', 5)}
-    ${textareaField('查体与生命体征', 'exam', 5)}
-    ${textareaField('化验单/影像/心电图/量表结果', 'labs', 7)}
     <button class="primary-button" id="save-case">💾 保存到最近 10 次记录</button>
   `;
 }
