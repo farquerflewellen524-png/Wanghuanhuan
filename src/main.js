@@ -11,6 +11,8 @@ const DEFAULT_CASE = {
   labs: 'WBC 16.2×10^9/L，N 89%，CRP 145 mg/L，PCT 3.2 ng/mL，乳酸 3.1 mmol/L，D-二聚体 1.8 mg/L，肌酐 156 μmol/L，BNP 780 pg/mL，肌钙蛋白轻度升高。胸片：右下肺片状渗出。',
 };
 
+DEFAULT_CASE.rawCase = buildUnifiedCaseText(DEFAULT_CASE);
+
 const guidelineLinks = [
   { title: '中华医学会指南与共识检索', type: '国内指南', url: 'https://www.cma.org.cn/col/col3868/index.html', note: '检索国内专科指南、专家共识及更新公告。' },
   { title: 'NICE Guidance', type: '国际指南', url: 'https://www.nice.org.uk/guidance', note: '按疾病关键词检索诊疗路径和证据综述。' },
@@ -100,7 +102,27 @@ const appState = {
 };
 
 function normalizeText(caseData) {
-  return Object.values(caseData).join(' ').toLowerCase();
+  const clinicalText = caseData.rawCase?.trim()
+    ? [caseData.rawCase]
+    : [caseData.chiefComplaint, caseData.history, caseData.exam, caseData.labs];
+  return [...clinicalText, caseData.name, caseData.age, caseData.sex]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function buildUnifiedCaseText(caseData) {
+  if (caseData.rawCase?.trim()) return caseData.rawCase;
+  const sections = [
+    ['主诉', caseData.chiefComplaint],
+    ['现病史/既往史/用药史/过敏史', caseData.history],
+    ['查体与生命体征', caseData.exam],
+    ['化验单/影像/心电图/量表结果', caseData.labs],
+  ];
+  return sections
+    .filter(([, value]) => String(value || '').trim())
+    .map(([label, value]) => `${label}：${value}`)
+    .join('\n\n');
 }
 
 function analyzeCase(caseData) {
@@ -197,11 +219,12 @@ function detectContextRisks(text, vitals) {
 }
 
 function evaluateCompleteness(caseData) {
+  const fullText = buildUnifiedCaseText(caseData);
   const fields = [
-    ['主诉', caseData.chiefComplaint],
-    ['病史/用药/过敏', caseData.history],
-    ['查体和生命体征', caseData.exam],
-    ['化验/影像/心电图', caseData.labs],
+    ['一体化病例/化验输入', fullText],
+    ['主诉关键词', fullText.match(/主诉|胸痛|发热|咳|气促|腹痛|头晕|意识|水肿|乏力/i)?.[0]],
+    ['生命体征/查体关键词', fullText.match(/T\s*\d|BP|血压|HR|心率|RR|呼吸|SpO|氧饱和|查体|体征/i)?.[0]],
+    ['化验/影像/心电图关键词', fullText.match(/WBC|CRP|PCT|乳酸|肌钙蛋白|D-二聚体|肌酐|CT|胸片|影像|心电图|化验/i)?.[0]],
   ];
   const missing = fields.filter(([, value]) => !String(value || '').trim()).map(([label]) => label);
   return { filled: fields.length - missing.length, total: fields.length, missing };
@@ -293,18 +316,15 @@ function renderCaseForm() {
   return `
     <div class="case-entry-frame">
       <div class="case-entry-header">
-        <span>一体化录入框</span>
-        <strong>把病历、体征、化验单、影像和量表统一放在同一个临床资料框内，便于系统整体分析。</strong>
+        <span>真正的一体化录入框</span>
+        <strong>病历、查体、生命体征、化验单、影像、心电图和量表结果只在下面这一个大框内录入；系统会直接从整段文本中提取诊断、风险和计划线索。</strong>
       </div>
-      <div class="form-grid compact">
+      <div class="form-grid compact patient-strip">
         ${inputField('姓名/编号', 'name')}
         ${inputField('年龄', 'age')}
         ${inputField('性别', 'sex')}
       </div>
-      ${textareaField('主诉', 'chiefComplaint')}
-      ${textareaField('现病史 / 既往史 / 用药史 / 过敏史', 'history', 5)}
-      ${textareaField('查体与生命体征', 'exam', 5)}
-      ${textareaField('化验单 / 影像 / 心电图 / 量表结果', 'labs', 8)}
+      ${unifiedCaseField()}
     </div>
     <button class="primary-button" id="save-case">💾 保存到最近 10 次记录</button>
   `;
@@ -324,6 +344,24 @@ function textareaField(label, key, rows = 4) {
     <label class="field">
       <span>${label}</span>
       <textarea rows="${rows}" data-case-field="${key}">${escapeHtml(appState.caseData[key])}</textarea>
+    </label>
+  `;
+}
+
+function unifiedCaseField() {
+  return `
+    <label class="field unified-field">
+      <span>病例及化验单一体化输入框</span>
+      <textarea
+        rows="18"
+        data-case-field="rawCase"
+        placeholder="建议直接粘贴完整病例，例如：
+主诉：……
+现病史/既往史/用药史/过敏史：……
+查体与生命体征：T、HR、RR、BP、SpO₂、阳性/阴性体征……
+化验单：血常规、CRP/PCT、乳酸、D-二聚体、肌钙蛋白、肝肾功能……
+影像/心电图/量表：CT、胸片、ECG、qSOFA、CURB-65、Wells……"
+      >${escapeHtml(buildUnifiedCaseText(appState.caseData))}</textarea>
     </label>
   `;
 }
@@ -453,7 +491,14 @@ function list(title, items, className = '') {
 function bindEvents() {
   document.querySelectorAll('[data-case-field]').forEach((field) => {
     field.addEventListener('input', (event) => {
-      appState.caseData[event.target.dataset.caseField] = event.target.value;
+      const fieldName = event.target.dataset.caseField;
+      appState.caseData[fieldName] = event.target.value;
+      if (fieldName === 'rawCase') {
+        appState.caseData.chiefComplaint = '';
+        appState.caseData.history = '';
+        appState.caseData.exam = '';
+        appState.caseData.labs = '';
+      }
       updateAnalysisPanels();
     });
   });
@@ -465,7 +510,7 @@ function bindEvents() {
     button.addEventListener('click', () => {
       const record = appState.recentCases.find((item) => item.id === button.dataset.historyId);
       if (!record) return;
-      appState.caseData = { ...record.caseData };
+      appState.caseData = { ...record.caseData, rawCase: buildUnifiedCaseText(record.caseData) };
       appState.messages.push({ role: 'assistant', text: `已载入历史病例：${record.summary}` });
       render();
     });
@@ -502,6 +547,7 @@ function updateAnalysisPanels() {
 }
 
 function saveCase() {
+  appState.caseData.rawCase = buildUnifiedCaseText(appState.caseData);
   const analysis = analyzeCase(appState.caseData);
   const record = {
     id: crypto.randomUUID(),
@@ -579,7 +625,7 @@ function buildTeachingReply(question, analysis, caseData) {
     return `本病例防漏诊优先级：${analysis.differentials.slice(0, 6).join('；')}。请为每项写明支持/反对证据，并用检查闭环验证，不能只用单一化验结果下结论。`;
   }
   if (text.includes('检查') || text.includes('检验') || text.includes('下一步') || text.includes('优先')) {
-    return `下一步按优先级：1）${analysis.plan.slice(0, 3).join('；2）')}；3）同步复盘危急值和影像。病例中${caseData.labs ? '已有化验线索，重点看动态趋势和是否能解释全部症状。' : '化验资料不足，应尽快补齐关键检验和影像。'}`;
+    return `下一步按优先级：1）${analysis.plan.slice(0, 3).join('；2）')}；3）同步复盘危急值和影像。病例中${buildUnifiedCaseText(caseData).match(/化验|WBC|CRP|PCT|乳酸|D-二聚体|肌钙蛋白|CT|胸片|影像|心电图/i) ? '一体化输入框内已有化验/影像线索，重点看动态趋势和是否能解释全部症状。' : '一体化输入框内化验影像资料不足，应尽快补齐关键检验和影像。'}`;
   }
   if (text.includes('icu') || text.includes('危重') || text.includes('转入') || text.includes('升级')) {
     return `升级处置触发点：${analysis.risks.slice(0, 6).join('；')}。若出现持续低氧、低血压、乳酸不降、少尿、意识改变或需要血管活性药，应立即请 ICU/上级医师。`;
