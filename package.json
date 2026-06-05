@@ -1,0 +1,11 @@
+{
+  "name": "resident-training-system",
+  "version": "1.0.0",
+  "description": "规培生病例推演与诊疗计划训练系统（静态前端原型）",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m http.server 5173",
+    "check": "node --check src/main.js"
+  }
+}
