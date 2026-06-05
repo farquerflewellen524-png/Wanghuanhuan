@@ -1,4 +1,5 @@
 const STORAGE_KEY = 'resident-training-system-recent-cases-v2';
+const DEFAULT_MODEL = 'gpt-5';
 
 const DEFAULT_CASE = {
   name: '示例患者',
@@ -91,8 +92,10 @@ const neverMissChecklist = [
 const appState = {
   caseData: { ...DEFAULT_CASE },
   recentCases: loadRecentCases(),
+  webSearchEnabled: true,
+  model: DEFAULT_MODEL,
   messages: [
-    { role: 'assistant', text: '请录入病例。我会按“先救命、再定位、再验证、再复盘”的规培思路，给出诊断谱、漏诊核查、风险并发症和诊疗计划。' },
+    { role: 'assistant', text: '请录入病例。我会按“先救命、再定位、再验证、再复盘”的规培思路，调用 GPT 模型并按需联网搜索最新指南/量表，给出诊断谱、漏诊核查、风险并发症和诊疗计划。' },
   ],
 };
 
@@ -397,19 +400,39 @@ function renderResources() {
 
 function renderChat() {
   return `
+    <div class="ai-settings">
+      <label class="switch-row">
+        <input type="checkbox" id="web-search-toggle" ${appState.webSearchEnabled ? 'checked' : ''} />
+        <span>开启网络搜索：用于最新指南、量表、药物与时效性问题</span>
+      </label>
+      <label class="model-field">
+        <span>GPT 模型</span>
+        <input id="model-input" value="${escapeAttr(appState.model)}" placeholder="例如 gpt-5" />
+      </label>
+    </div>
     <div class="quick-prompts">
       <button data-prompt="这个病例最不能漏掉哪些诊断？">不能漏什么？</button>
       <button data-prompt="下一步检查和处置按优先级怎么排？">下一步优先级</button>
       <button data-prompt="哪些风险提示需要立即请上级或ICU？">何时升级？</button>
     </div>
     <div class="chat-window" id="chat-window">
-      ${appState.messages.map((message) => `<div class="chat-message ${message.role}">${escapeHtml(message.text)}</div>`).join('')}
+      ${appState.messages.map(renderChatMessage).join('')}
     </div>
     <form class="chat-form" id="chat-form">
       <textarea id="question-input" rows="3" placeholder="可直接追问：鉴别诊断怎么排？还会漏掉什么？治疗方案是否符合该病例风险？"></textarea>
       <button type="submit">发送提问</button>
     </form>
   `;
+}
+
+function renderChatMessage(message) {
+  const citations = message.citations?.length
+    ? `<div class="citation-list"><strong>引用来源</strong>${message.citations
+        .map((citation) => `<a href="${escapeAttr(citation.url)}" target="_blank" rel="noreferrer">${escapeHtml(citation.title || citation.url)}</a>`)
+        .join('')}</div>`
+    : '';
+  const meta = message.meta ? `<small class="message-meta">${escapeHtml(message.meta)}</small>` : '';
+  return `<div class="chat-message ${message.role} ${message.pending ? 'pending' : ''}">${escapeHtml(message.text)}${citations}${meta}</div>`;
 }
 
 function list(title, items, className = '') {
@@ -440,6 +463,16 @@ function bindEvents() {
       appState.messages.push({ role: 'assistant', text: `已载入历史病例：${record.summary}` });
       render();
     });
+  });
+
+  const webSearchToggle = document.getElementById('web-search-toggle');
+  webSearchToggle.addEventListener('change', (event) => {
+    appState.webSearchEnabled = event.target.checked;
+  });
+
+  const modelInput = document.getElementById('model-input');
+  modelInput.addEventListener('change', (event) => {
+    appState.model = event.target.value.trim() || DEFAULT_MODEL;
   });
 
   document.querySelectorAll('[data-prompt]').forEach((button) => {
@@ -478,15 +511,60 @@ function saveCase() {
   render();
 }
 
-function submitQuestion(question) {
+async function submitQuestion(question) {
   if (!question) return;
   const input = document.getElementById('question-input');
+  const modelInput = document.getElementById('model-input');
+  const webSearchToggle = document.getElementById('web-search-toggle');
+  appState.model = modelInput?.value.trim() || DEFAULT_MODEL;
+  appState.webSearchEnabled = Boolean(webSearchToggle?.checked);
   const analysis = analyzeCase(appState.caseData);
   appState.messages.push({ role: 'user', text: question });
-  appState.messages.push({ role: 'assistant', text: buildTeachingReply(question, analysis, appState.caseData) });
+  const pendingMessage = { role: 'assistant', text: '正在调用 GPT 模型并按需联网搜索，请稍候……', pending: true };
+  appState.messages.push(pendingMessage);
   if (input) input.value = '';
   render();
   document.querySelector('.chat-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  try {
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        caseData: appState.caseData,
+        localAnalysis: summarizeAnalysisForApi(analysis),
+        webSearch: appState.webSearchEnabled,
+        model: appState.model,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'GPT 服务调用失败。');
+    Object.assign(pendingMessage, {
+      text: data.answer,
+      pending: false,
+      citations: data.citations?.length ? data.citations : data.sources,
+      meta: `${data.model} · ${data.webSearch ? '已开启网络搜索' : '未开启网络搜索'}`,
+    });
+  } catch (error) {
+    Object.assign(pendingMessage, {
+      text: `${buildTeachingReply(question, analysis, appState.caseData)}\n\n（GPT/网络搜索暂不可用：${error.message}）`,
+      pending: false,
+      meta: '本地规则兜底回答',
+    });
+  }
+  render();
+}
+
+function summarizeAnalysisForApi(analysis) {
+  return {
+    primaryTopic: analysis.primary.topic,
+    rankedDiagnoses: analysis.rankedDiagnoses,
+    differentials: analysis.differentials,
+    missed: analysis.missed,
+    risks: analysis.risks,
+    plan: analysis.plan,
+  };
 }
 
 function buildTeachingReply(question, analysis, caseData) {
